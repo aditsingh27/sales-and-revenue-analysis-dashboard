@@ -1,0 +1,11 @@
+month,product,category,region,channel,units,revenue,cost
+Jan,Aurora Laptop 14,Electronics,North,Online,42,50400,33600
+Jan,Nova Headphones,Electronics,West,Retail,118,17700,8850
+Jan,Summit Running Shoes,Apparel,South,Retail,95,11400,5700
+Feb,Aurora Laptop 14,Electronics,West,Online,51,61200,40800
+Feb,Bloom Skincare Kit,Beauty,East,Online,90,7200,2880
+Mar,Nova Headphones,Electronics,North,Online,165,24750,12375
+Apr,Summit Running Shoes,Apparel,East,Online,134,16080,8040
+May,Aurora Laptop 14,Electronics,North,Partner,55,66000,44000
+Jun,Nova Headphones,Electronics,North,Retail,190,28500,14250
+Jul,Bloom Skincare Kit,Beauty,North,Online,170,13600,5440
