@@ -1,4 +1,8 @@
-import { MONTHS } from "../data/sampleSales";
+import { MONTHS } from "../data/sampleSales.js";
+
+const ALL_MONTHS = Array.from({ length: 12 }, (_, index) =>
+  new Date(2000, index, 1).toLocaleString("en", { month: "short" })
+);
 
 export function formatCurrency(n) {
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
@@ -27,10 +31,10 @@ export function filterSales(rows, { region, category, channel, period }) {
     if (region !== "All" && r.region !== region) return false;
     if (category !== "All" && r.category !== category) return false;
     if (channel !== "All" && r.channel !== channel) return false;
-    if (period === "Q1" && r.monthIndex > 2) return false;
+    if (period === "Q1" && (r.monthIndex < 0 || r.monthIndex > 2)) return false;
     if (period === "Q2" && (r.monthIndex < 3 || r.monthIndex > 5)) return false;
-    if (period === "H1" && r.monthIndex > 5) return false;
-    if (period === "Jul" && r.month !== "Jul") return false;
+    if (period === "H1" && (r.monthIndex < 0 || r.monthIndex > 5)) return false;
+    if (period.startsWith("month:") && getPeriodKey(r) !== period.slice(6)) return false;
     return true;
   });
 }
@@ -72,15 +76,21 @@ export function byRegion(rows) {
 }
 
 export function monthlyTrend(rows) {
-  const present = MONTHS.filter((m) => rows.some((r) => r.month === m));
-  return present.map((m) => {
-    const monthRows = rows.filter((r) => r.month === m);
-    return {
-      month: m,
-      revenue: sum(monthRows, "revenue"),
-      units: sum(monthRows, "units"),
-    };
-  });
+  const groups = new Map();
+  for (const row of rows) {
+    const key = getPeriodKey(row);
+    const group = groups.get(key) ?? { month: row.month, revenue: 0, units: 0 };
+    group.revenue += Number(row.revenue) || 0;
+    group.units += Number(row.units) || 0;
+    groups.set(key, group);
+  }
+  return [...groups.entries()]
+    .sort(([a], [b]) => {
+      if (a === "undated") return 1;
+      if (b === "undated") return -1;
+      return a.localeCompare(b);
+    })
+    .map(([periodKey, group]) => ({ periodKey, ...group }));
 }
 
 export function momGrowth(trend) {
@@ -96,51 +106,172 @@ export function uniqueValues(rows, key) {
 }
 
 export function normalizeImportedRows(rawRows) {
-  const monthLookup = Object.fromEntries(MONTHS.map((m, i) => [m.toLowerCase(), i]));
+  const aliases = {
+    date: ["date", "orderdate", "transactiondate", "saledate", "invoicedate", "createdat"],
+    month: ["month"],
+    product: ["product", "productname", "sku", "item", "itemname", "description", "skuname"],
+    category: ["category", "productcategory"],
+    region: ["region", "salesregion", "territory", "market", "country", "state"],
+    channel: ["channel", "saleschannel", "source"],
+    units: [
+      "units", "quantity", "qty", "qtysold", "quantitysold", "quantityordered", "unitssold",
+      "unitsordered", "items",
+    ],
+    revenue: [
+      "revenue", "sales", "amount", "totalsales", "netsales", "grosssales",
+      "salesamount", "totalamount", "invoiceamount", "subtotal", "totalrevenue",
+      "revenueusd", "ordervalue", "linetotal", "extendedprice",
+    ],
+    cost: ["cost", "cogs", "totalcost", "costofgoodssold"],
+    unitPrice: ["unitprice", "priceperunit", "sellingprice", "saleprice", "price"],
+    unitCost: ["unitcost", "costperunit"],
+  };
+  const aliasSet = Object.fromEntries(
+    Object.entries(aliases).map(([field, names]) => [
+      field,
+      new Set(names.map(normalizeHeader)),
+    ])
+  );
 
-  return rawRows
-    .map((row) => {
-      const get = (...keys) => {
-        for (const k of keys) {
-          const found = Object.keys(row).find((rk) => rk.toLowerCase().trim() === k.toLowerCase());
-          if (found != null && row[found] !== "" && row[found] != null) return row[found];
-        }
-        return undefined;
-      };
-
-      const monthRaw = String(get("month", "Month") ?? "").trim();
-      let month = monthRaw.slice(0, 3);
-      month = month.charAt(0).toUpperCase() + month.slice(1).toLowerCase();
-      let monthIndex = monthLookup[month.toLowerCase()];
-
-      if (monthIndex == null) {
-        const dateRaw = get("date", "Date", "order_date");
-        if (dateRaw) {
-          const d = new Date(dateRaw);
-          if (!Number.isNaN(d.getTime())) {
-            monthIndex = d.getMonth();
-            month = MONTHS[monthIndex] ?? month;
-          }
-        }
+  return rawRows.map((row) => {
+    const values = new Map(
+      Object.entries(row).map(([key, value]) => [normalizeHeader(key), value])
+    );
+    const get = (field) => {
+      for (const alias of aliasSet[field]) {
+        const value = values.get(alias);
+        if (value !== "" && value != null) return value;
       }
+      const matchingHeader = [...values.keys()].find((key) => matchesHeader(field, key));
+      if (matchingHeader != null && values.get(matchingHeader) !== "") {
+        return values.get(matchingHeader);
+      }
+      return undefined;
+    };
 
-      const units = Number(get("units", "quantity", "qty", "Units")) || 0;
-      const revenue = Number(get("revenue", "sales", "amount", "Revenue")) || 0;
-      const cost = Number(get("cost", "cogs", "Cost")) || 0;
+    const units = parseNumber(get("units")) ?? 0;
+    const reportedRevenue = parseNumber(get("revenue"));
+    const revenue = reportedRevenue ?? units * (parseNumber(get("unitPrice")) ?? 0);
+    const reportedCost = parseNumber(get("cost"));
+    const cost = reportedCost ?? units * (parseNumber(get("unitCost")) ?? 0);
+    const date = parseSalesDate(get("date") ?? get("month"));
+    const monthIndex = date?.monthIndex ?? -1;
 
-      return {
-        month: MONTHS[monthIndex] ?? month ?? "Jan",
-        monthIndex: monthIndex ?? 0,
-        product: String(get("product", "sku", "item", "Product") ?? "Unknown"),
-        category: String(get("category", "Category") ?? "Other"),
-        region: String(get("region", "Region") ?? "Unknown"),
-        channel: String(get("channel", "Channel") ?? "Unknown"),
-        units,
-        revenue,
-        cost,
-      };
-    })
-    .filter((r) => r.revenue > 0 || r.units > 0);
+    return {
+      month: date?.month ?? "Undated",
+      monthIndex,
+      dateKey: date?.dateKey ?? "undated",
+      product: String(get("product") ?? "All sales").trim() || "All sales",
+      category: String(get("category") ?? "Other").trim() || "Other",
+      region: String(get("region") ?? "Unknown").trim() || "Unknown",
+      channel: String(get("channel") ?? "Unknown").trim() || "Unknown",
+      units,
+      revenue,
+      cost,
+    };
+  }).filter((row) => row.revenue > 0 || row.units > 0);
+}
+
+function normalizeHeader(value) {
+  return String(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function matchesHeader(field, header) {
+  if (field === "date") return /date|datetime|timestamp/.test(header);
+  if (field === "product") return /product|sku|item|description/.test(header);
+  if (field === "category") return /category/.test(header);
+  if (field === "region") return /region|territory|market|country/.test(header);
+  if (field === "channel") return /channel|source/.test(header);
+  if (field === "units") return /quantity|qty|units|items/.test(header);
+  if (field === "revenue") {
+    return /revenue|sales|turnover|gmv|amount|ordervalue/.test(header) &&
+      !/channel|region|date|salesrep|salesperson|salesteam|salesmanager|unitprice|discount/.test(header);
+  }
+  if (field === "cost") return /cogs|cost/.test(header);
+  if (field === "unitPrice") return /unitprice|priceperunit|sellingprice|saleprice/.test(header);
+  if (field === "unitCost") return /unitcost|costperunit/.test(header);
+  return false;
+}
+
+function parseNumber(value) {
+  if (value == null || String(value).trim() === "") return undefined;
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+
+  let text = String(value).trim();
+  const negative = /^\(.*\)$/.test(text);
+  text = text.replace(/[^\d,.-]/g, "");
+  if (!text || !/\d/.test(text)) return undefined;
+  if (text.includes(",") && text.includes(".")) {
+    text = text.lastIndexOf(",") > text.lastIndexOf(".")
+      ? text.replace(/\./g, "").replace(",", ".")
+      : text.replace(/,/g, "");
+  } else if (text.includes(",")) {
+    text = /,\d{1,2}$/.test(text) ? text.replace(",", ".") : text.replace(/,/g, "");
+  }
+
+  const number = Number(text);
+  if (!Number.isFinite(number)) return undefined;
+  return negative ? -number : number;
+}
+
+function parseSalesDate(value) {
+  if (value == null || String(value).trim() === "") return undefined;
+  let year;
+  let monthIndex;
+
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    year = value.getFullYear();
+    monthIndex = value.getMonth();
+  } else if (typeof value === "number" && value > 20000 && value < 80000) {
+    const date = new Date(Date.UTC(1899, 11, 30) + value * 86400000);
+    year = date.getUTCFullYear();
+    monthIndex = date.getUTCMonth();
+  } else {
+    const text = String(value).trim();
+    const fullDate = text.match(/^(\d{4})[-/](\d{1,2})[-/]\d{1,2}/);
+    const yearMonth = text.match(/^(\d{4})[-/](\d{1,2})$/);
+    const monthYear = text.match(/^([a-z]+)[\s,/-]+(\d{4})$/i);
+    const monthName = text.slice(0, 3).toLowerCase();
+    const namedMonthIndex = ALL_MONTHS.findIndex((month) => month.toLowerCase() === monthName);
+
+    if (fullDate) {
+      year = Number(fullDate[1]);
+      monthIndex = Number(fullDate[2]) - 1;
+    } else if (yearMonth) {
+      year = Number(yearMonth[1]);
+      monthIndex = Number(yearMonth[2]) - 1;
+    } else if (monthYear && namedMonthIndex >= 0) {
+      year = Number(monthYear[2]);
+      monthIndex = namedMonthIndex;
+    } else if (namedMonthIndex >= 0 && !/\d/.test(text)) {
+      monthIndex = namedMonthIndex;
+    } else {
+      const date = new Date(text);
+      if (!Number.isNaN(date.getTime())) {
+        year = date.getFullYear();
+        monthIndex = date.getMonth();
+      }
+    }
+  }
+
+  if (monthIndex == null || monthIndex < 0 || monthIndex > 11) return undefined;
+  const month = ALL_MONTHS[monthIndex];
+  return {
+    month: year ? `${month} ${year}` : month,
+    monthIndex,
+    dateKey: year ? `${year}-${String(monthIndex + 1).padStart(2, "0")}` : `--${String(monthIndex + 1).padStart(2, "0")}`,
+  };
+}
+
+function getPeriodKey(row) {
+  if (row.dateKey) return row.dateKey;
+  return row.monthIndex >= 0
+    ? `--${String(row.monthIndex + 1).padStart(2, "0")}`
+    : "undated";
 }
 
 export function buildInsights(rows) {

@@ -184,6 +184,17 @@ a.btn {
   margin: 12px 0 0;
 }
 
+.import-success {
+  color: var(--success);
+  margin: 12px 0 0;
+  font-size: 0.9rem;
+}
+
+.btn:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
 .hint code {
   background: var(--bg-soft);
   padding: 1px 6px;

@@ -26,20 +26,21 @@ npm run build
 npm run preview
 ```
 
-## Expected data columns
+Run the import normalization checks with `npm test`.
 
-| Column   | Aliases accepted      |
-|----------|-----------------------|
-| month    | date, order_date      |
-| product  | sku, item             |
-| category |                       |
-| region   |                       |
-| channel  |                       |
-| units    | quantity, qty         |
-| revenue  | sales, amount         |
-| cost     | cogs                  |
+## Importing your sales data
 
-A starter file is included at [`public/sample-sales.csv`](public/sample-sales.csv).
+Import CSV or Excel files with a header row. The importer recognizes common variations such as
+`Order Date`, `Product Name`, `Quantity Sold`, `Net Sales`, `Unit Price`, and `Cost of Goods Sold`.
+Date, product, category, region, channel, and cost are optional. Rows with no date appear as
+“Undated”; available months become selectable in the period filter. Revenue can be provided
+directly or calculated from quantity × unit price.
+
+Currency symbols and common thousands/decimal separators are supported. The dashboard uses USD
+for display, so convert other currencies before importing if you need accurate currency totals.
+
+A mock retail dataset is built in for trying the dashboard, and a starter CSV is available at
+[`public/sample-sales.csv`](public/sample-sales.csv).
 
 ## Tech stack
 
