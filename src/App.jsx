@@ -38,11 +38,10 @@ import "./App.css";
 const CHART_COLORS = ["#3d9cf0", "#3ecf8e", "#e6b84d", "#f07178", "#a78bfa", "#22d3ee"];
 
 const PERIOD_OPTIONS = [
-  { value: "YTD", label: "YTD (Jan–Jul)" },
+  { value: "All", label: "All data" },
   { value: "H1", label: "H1 (Jan–Jun)" },
   { value: "Q1", label: "Q1" },
   { value: "Q2", label: "Q2" },
-  { value: "Jul", label: "July only" },
 ];
 
 export default function App() {
@@ -52,9 +51,11 @@ export default function App() {
   const [region, setRegion] = useState("All");
   const [category, setCategory] = useState("All");
   const [channel, setChannel] = useState("All");
-  const [period, setPeriod] = useState("YTD");
+  const [period, setPeriod] = useState("All");
   const [view, setView] = useState("overview");
   const [importError, setImportError] = useState("");
+  const [importSummary, setImportSummary] = useState("");
+  const [isImporting, setIsImporting] = useState(false);
 
   const filtered = useMemo(
     () => filterSales(rows, { region, category, channel, period }),
@@ -68,6 +69,13 @@ export default function App() {
   const margin = revenue === 0 ? 0 : (profit / revenue) * 100;
   const aov = units === 0 ? 0 : revenue / units;
   const trend = monthlyTrend(filtered);
+  const periodOptions = [
+    ...PERIOD_OPTIONS,
+    ...monthlyTrend(rows).map(({ periodKey, month }) => ({
+      value: `month:${periodKey}`,
+      label: month,
+    })),
+  ];
   const growth = momGrowth(trend);
   const products = topProducts(filtered, 6);
   const categories = byCategory(filtered);
@@ -78,7 +86,7 @@ export default function App() {
   const regionOpts = ["All", ...uniqueValues(rows, "region")];
   const categoryOpts = ["All", ...uniqueValues(rows, "category")];
   const channelOpts = ["All", ...uniqueValues(rows, "channel")];
-  const activeFilters = [region !== "All", category !== "All", channel !== "All", period !== "YTD"].filter(
+  const activeFilters = [region !== "All", category !== "All", channel !== "All", period !== "All"].filter(
     Boolean
   ).length;
 
@@ -86,38 +94,63 @@ export default function App() {
     setRegion("All");
     setCategory("All");
     setChannel("All");
-    setPeriod("YTD");
+    setPeriod("All");
   }
 
   function loadSample() {
     setRows(SAMPLE_SALES);
     setSourceLabel("Sample retail extract");
     setImportError("");
+    setImportSummary("");
     resetFilters();
   }
 
   function applyImported(rawRows, label) {
     const normalized = normalizeImportedRows(rawRows);
     if (!normalized.length) {
-      setImportError("No valid sales rows found. Expected columns like month/product/revenue/units.");
+      const headers = rawRows[0] ? Object.keys(rawRows[0]).filter(Boolean) : [];
+      const found = headers.length ? ` Columns found: ${headers.join(", ")}.` : "";
+      setImportError(
+        `No usable sales rows found.${found} Add a Revenue/Sales/Amount column, or Quantity and Unit Price columns. Your current dashboard data was kept.`
+      );
+      setImportSummary("");
+      setIsImporting(false);
       return;
     }
     setRows(normalized);
     setSourceLabel(label);
     setImportError("");
+    setImportSummary(
+      `${normalized.length.toLocaleString()} sales rows analyzed from ${label}.`
+    );
+    setIsImporting(false);
     resetFilters();
   }
 
   function handleFile(file) {
     if (!file) return;
     const name = file.name.toLowerCase();
+    setImportError("");
+    setImportSummary("");
+    setIsImporting(true);
 
     if (name.endsWith(".csv") || name.endsWith(".txt")) {
       Papa.parse(file, {
         header: true,
-        skipEmptyLines: true,
-        complete: (result) => applyImported(result.data, file.name),
-        error: () => setImportError("Failed to parse CSV file."),
+        skipEmptyLines: "greedy",
+        transformHeader: (header) => header.replace(/^\uFEFF/, "").trim(),
+        complete: (result) => {
+          if (result.errors.length && !result.data.length) {
+            setImportError(`Could not read this CSV: ${result.errors[0].message}`);
+            setIsImporting(false);
+            return;
+          }
+          applyImported(result.data, file.name);
+        },
+        error: (error) => {
+          setImportError(`Could not read this CSV: ${error.message}`);
+          setIsImporting(false);
+        },
       });
       return;
     }
@@ -128,17 +161,24 @@ export default function App() {
         try {
           const workbook = XLSX.read(e.target.result, { type: "array" });
           const sheet = workbook.Sheets[workbook.SheetNames[0]];
+          if (!sheet) throw new Error("The workbook has no readable sheets.");
           const data = XLSX.utils.sheet_to_json(sheet);
           applyImported(data, file.name);
-        } catch {
-          setImportError("Failed to parse Excel file.");
+        } catch (error) {
+          setImportError(`Could not read this Excel file: ${error.message}`);
+          setIsImporting(false);
         }
+      };
+      reader.onerror = () => {
+        setImportError("Could not read this Excel file.");
+        setIsImporting(false);
       };
       reader.readAsArrayBuffer(file);
       return;
     }
 
     setImportError("Supported formats: CSV, XLSX, XLS.");
+    setIsImporting(false);
   }
 
   return (
@@ -164,8 +204,14 @@ export default function App() {
           <p>CSV / Excel upload, or keep the built-in sample dataset.</p>
         </div>
         <div className="import-actions">
-          <button type="button" className="btn primary" onClick={() => fileRef.current?.click()}>
-            Import CSV / Excel
+          <button
+            type="button"
+            className="btn primary"
+            onClick={() => fileRef.current?.click()}
+            disabled={isImporting}
+            aria-busy={isImporting}
+          >
+            {isImporting ? "Analyzing file..." : "Import CSV / Excel"}
           </button>
           <input
             ref={fileRef}
@@ -185,10 +231,10 @@ export default function App() {
           </a>
         </div>
         {importError ? <p className="error">{importError}</p> : null}
+        {importSummary ? <p className="import-success" role="status">{importSummary}</p> : null}
         <p className="hint">
-          Expected columns: <code>month</code>, <code>product</code>, <code>category</code>,{" "}
-          <code>region</code>, <code>channel</code>, <code>units</code>, <code>revenue</code>,{" "}
-          <code>cost</code> (aliases like qty/sales/cogs also work).
+          Required: a sales/revenue/amount column, or quantity and unit price. Date, product,
+          category, region, channel, and cost are optional.
         </p>
       </section>
 
@@ -238,7 +284,7 @@ export default function App() {
           <label>
             Period
             <select value={period} onChange={(e) => setPeriod(e.target.value)}>
-              {PERIOD_OPTIONS.map((o) => (
+              {periodOptions.map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
                 </option>
